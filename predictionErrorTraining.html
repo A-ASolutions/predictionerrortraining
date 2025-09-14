@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<title>Koi Pond — Prediction Error Training</title>
+<meta name="theme-color" content="#050b12"/>
+<style>
+  :root{
+    color-scheme:dark;
+    --fg:#eaf2ff; --muted:#9fb0c6; --water1:#07131b; --water2:#0b1f2b;
+    --panel:#0f1a22; --line:#1c2b38; --ok:#71e096;
+    /* JS sets --vh to fix iOS URL-bar shrink; fallback below uses 100svh */
+    --vh: 1vh;
+  }
+  html,body{margin:0;height:100%;background:#050b12;color:var(--fg);font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif}
+  /* Pond fills the *visible* viewport on mobile, including iOS Safari */
+  .pond-wrap{position:fixed;inset:0;display:grid;place-items:center}
+  .pond{
+    position:relative;
+    width:100vw;
+    height:calc(var(--vh)*100);           /* primary (JS updates on resize) */
+    height:100svh;                         /* modern mobile browsers */
+    height:100dvh;                         /* desktop/Chromium fallback */
+    background:radial-gradient(120% 130% at 50% 8%,var(--water2) 0%,var(--water1) 70%);
+    overflow:hidden;
+    padding-bottom:env(safe-area-inset-bottom,0px);
+  }
+  canvas{width:100%;height:100%;display:block;touch-action:manipulation}
+  .hud{position:absolute;inset:0;pointer-events:none}
+
+  /* NEW unified toolbar (no overlap): spans the width, wraps gracefully */
+  .toolbar{
+    position:absolute; top:8px; left:8px; right:8px;
+    display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+    pointer-events:auto;
+    padding-left:env(safe-area-inset-left,0px);
+    padding-right:env(safe-area-inset-right,0px);
+  }
+  .group{display:flex; gap:8px; flex-wrap:wrap; align-items:center}
+  .spacer{flex:1 1 auto} /* pushes right group to the edge; allows wrapping */
+
+  button,select{
+    background:var(--panel); color:var(--fg);
+    border:1px solid var(--line);
+    padding:8px 12px; border-radius:12px; cursor:pointer; font-weight:600;
+  }
+  button:disabled{opacity:.55;cursor:not-allowed}
+  .chip{
+    background:var(--panel); border:1px solid var(--line);
+    padding:6px 10px; border-radius:999px; font-size:.9rem; color:var(--muted)
+  }
+  .bottom-controls{
+    position:absolute; bottom:12px; right:12px; display:flex; gap:8px; pointer-events:auto;
+    padding-right:env(safe-area-inset-right,0px);
+    padding-bottom:env(safe-area-inset-bottom,0px);
+  }
+  .credit{
+    position:fixed; bottom:8px; left:50%; transform:translateX(-50%);
+    background:#0f1a22cc; border:1px solid #1c2b38; color:#9fb0c6;
+    padding:6px 10px; border-radius:999px; font-size:.85rem; z-index:40;
+    margin-bottom:env(safe-area-inset-bottom,0px);
+    pointer-events:none; /* non-blocking */
+  }
+
+  /* Active surprise hint (subtle ring) */
+  .ring{position:absolute;inset:10px;border:2px solid rgba(255,255,255,.14);border-radius:20px;opacity:0;transition:opacity .15s ease;pointer-events:none}
+  .ring.on{opacity:1}
+
+  /* Summary modal */
+  .modal{position:fixed;inset:0;background:#000000b3;display:none;place-items:center;padding:16px;z-index:50}
+  .modal.open{display:grid}
+  .card{width:min(560px,92vw);background:#0f1520;border:1px solid #1f2a3c;border-radius:16px;padding:16px}
+  .card h2{margin:0 0 6px 0;font-size:1.05rem}
+  .card p{margin:.5em 0;color:var(--muted)}
+  .actions{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;margin-top:10px}
+
+  /* Toast */
+  .toast{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);background:var(--panel);border:1px solid var(--line);color:var(--fg);padding:8px 12px;border-radius:999px;font-size:.9rem;opacity:0;transition:opacity .25s;z-index:60;pointer-events:none}
+  .toast.show{opacity:1}
+
+  /* XS phone tweaks: smaller controls, allow two rows nicely */
+  @media (max-width: 480px){
+    button,select{padding:7px 10px; font-size:14px}
+    .chip{font-size:.85rem}
+  }
+</style>
+</head>
+<body>
+<div class="pond-wrap">
+  <div class="pond" id="pond" aria-label="Koi pond" tabindex="0">
+    <canvas id="c"></canvas>
+    <div class="hud">
+      <!-- Unified top toolbar -->
+      <div class="toolbar">
+        <div class="group">
+          <select id="dur" title="Session">
+            <option value="60">1 min</option>
+            <option value="120" selected>2 min</option>
+            <option value="180">3 min</option>
+            <option value="300">5 min</option>
+          </select>
+          <select id="gentle" title="Pace">
+            <option value="soft" selected>Gentle</option>
+            <option value="medium">Steady</option>
+            <option value="brisk">Brisk</option>
+          </select>
+          <select id="sense" title="Sensitivity">
+            <option value="lenient" selected>Lenient</option>
+            <option value="standard">Standard</option>
+            <option value="strict">Strict</option>
+          </select>
+          <button id="downloadBtn" title="Download this app">Download</button>
+        </div>
+        <div class="spacer"></div>
+        <div class="group">
+          <button id="how">How</button>
+          <button id="fs">Fullscreen</button>
+          <button id="start">Start</button>
+          <button id="pause" disabled>Pause</button>
+          <button id="resume" disabled>Resume</button>
+          <button id="stop" disabled>Stop</button>
+        </div>
+        <div class="spacer" style="flex-basis:100%;height:0"></div>
+        <div class="chip" id="timehud" style="margin:0 auto" hidden>—:—</div>
+      </div>
+
+      <!-- Bottom right: UI toggle -->
+      <div class="bottom-controls">
+        <button id="toggleUI">Hide UI</button>
+      </div>
+
+      <div class="ring" id="ring"></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="summary" aria-modal="true" role="dialog">
+  <div class="card">
+    <h2>Session summary</h2>
+    <p id="sumText" class="muted"></p>
+    <div class="actions">
+      <button id="closeSum">Close</button>
+      <button id="restart">Restart</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast">Session ended</div>
+<div id="credit" class="credit">Designed and created by Menaingful Path Therapy (Abdullah Al-Shoaibi)</div>
+
+<script>
+/* ===== Mobile viewport fix (iOS URL bar) ===== */
+function setVH(){ document.documentElement.style.setProperty('--vh', (window.innerHeight * 0.01) + 'px'); }
+setVH(); addEventListener('resize', setVH);
+
+/* ========= App ========= */
+document.addEventListener('DOMContentLoaded', () => {
+  const pond   = document.getElementById('pond');
+  const canvas = document.getElementById('c');
+  const ctx    = canvas.getContext('2d', { alpha:false, desynchronized:true });
+
+  const timehud   = document.getElementById('timehud');
+  const ring      = document.getElementById('ring');
+  const toast     = document.getElementById('toast');
+  const credit    = document.getElementById('credit');
+
+  const durSel    = document.getElementById('dur');
+  const paceSel   = document.getElementById('gentle');
+  const senseSel  = document.getElementById('sense');
+
+  const howBtn    = document.getElementById('how');
+  const fsBtn     = document.getElementById('fs');
+  const startBtn  = document.getElementById('start');
+  const pauseBtn  = document.getElementById('pause');
+  const resumeBtn = document.getElementById('resume');
+  const stopBtn   = document.getElementById('stop');
+  const toggleUI  = document.getElementById('toggleUI');
+  const downloadBtn = document.getElementById('downloadBtn');
+
+  const summaryModal = document.getElementById('summary');
+  const sumText      = document.getElementById('sumText');
+  const closeSum     = document.getElementById('closeSum');
+  const restartBtn   = document.getElementById('restart');
+
+  /* ---- Fullscreen toggle ---- */
+  function isFS(){ return !!(document.fullscreenElement || document.webkitFullscreenElement); }
+  function enterFS(){ (pond.requestFullscreen||pond.webkitRequestFullscreen||pond.msRequestFullscreen||pond.mozRequestFullScreen)?.call(pond); }
+  function exitFS(){ (document.exitFullscreen||document.webkitExitFullscreen||document.msExitFullscreen||document.mozCancelFullScreen)?.call(document); }
+  function updateFSLabel(){ fsBtn.textContent = isFS() ? 'Exit Fullscreen' : 'Fullscreen'; }
+  fsBtn.addEventListener('click', () => (isFS() ? exitFS() : enterFS()));
+  document.addEventListener('fullscreenchange', updateFSLabel);
+  document.addEventListener('webkitfullscreenchange', updateFSLabel);
+  updateFSLabel();
+
+  /* ---- Audio ---- */
+  const AC = window.AudioContext || window.webkitAudioContext; let ac=null;
+  function audio(){ if(!ac){ try{ ac=new AC(); }catch{} } return ac; }
+  function rewardChord(){
+    const ctxA=audio(); if(!ctxA) return;
+    const freqs=[523.25,659.25,783.99], now=ctxA.currentTime;
+    freqs.forEach((f,i)=>{ const o=ctxA.createOscillator(), g=ctxA.createGain();
+      o.type='sine'; o.frequency.value=f; g.gain.value=0.0001; o.connect(g).connect(ctxA.destination);
+      g.gain.exponentialRampToValueAtTime(0.05, now+i*0.05+0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, now+i*0.05+0.32);
+      o.start(now+i*0.05); o.stop(now+i*0.05+0.34);
+    });
+    if (navigator.vibrate) navigator.vibrate(20);
+  }
+  window.addEventListener('pointerdown', ()=> audio(), { once:true });
+
+  /* ---- Resize ---- */
+  function resize(){
+    const r = pond.getBoundingClientRect();
+    canvas.width  = Math.max(2, Math.round(r.width  * (devicePixelRatio||1)));
+    canvas.height = Math.max(2, Math.round(r.height * (devicePixelRatio||1)));
+  }
+  resize(); addEventListener('resize', resize);
+
+  /* ---- Scene ---- */
+  const ripples=[]; function addRipple(x,y){ ripples.push({x,y,r:6,alpha:0.5}); }
+  const petals=[]; function spawnPetal(){ petals.push({ x:Math.random()*canvas.width, y:-20, vy:(0.25+Math.random()*0.5)*(devicePixelRatio||1), vx:(Math.random()*0.6-0.3)*(devicePixelRatio||1), r:5*(devicePixelRatio||1), rot:Math.random()*Math.PI*2, vr:(Math.random()*0.02-0.01) }); }
+  for(let i=0;i<30;i++) spawnPetal();
+  function burstPetals(x,y){ for(let i=0;i<18;i++){ petals.push({ x,y, vy:(Math.random()*1.2-0.6)*(devicePixelRatio||1), vx:(Math.random()*1.2-0.6)*(devicePixelRatio||1), r:(3+Math.random()*3)*(devicePixelRatio||1), rot:Math.random()*Math.PI*2, vr:(Math.random()*0.06-0.03) }); } }
+
+  function drawPetals(){
+    ctx.save(); ctx.fillStyle='#ffd1e6';
+    petals.forEach(p=>{ p.y+=p.vy; p.x+=p.vx; p.rot+=p.vr;
+      if(p.y>canvas.height+30||p.x<-30||p.x>canvas.width+30){ p.y=-10; p.x=Math.random()*canvas.width; p.vx=(Math.random()*0.6-0.3)*(devicePixelRatio||1); p.vy=(0.25+Math.random()*0.5)*(devicePixelRatio||1); }
+      ctx.translate(p.x,p.y); ctx.rotate(p.rot); ctx.globalAlpha=0.7;
+      ctx.beginPath(); ctx.ellipse(0,0,p.r*0.8,p.r,0,0,Math.PI*2); ctx.fill();
+      ctx.setTransform(1,0,0,1,0,0);
+    }); ctx.restore();
+  }
+  function drawRipples(){
+    for(let i=ripples.length-1;i>=0;i--){ const rp=ripples[i]; rp.r+=2*(devicePixelRatio||1); rp.alpha*=0.96;
+      if(rp.alpha<0.02){ ripples.splice(i,1); continue; }
+      ctx.save(); ctx.globalAlpha=rp.alpha; ctx.strokeStyle='#bfe9ff'; ctx.lineWidth=2*(devicePixelRatio||1);
+      ctx.beginPath(); ctx.arc(rp.x,rp.y,rp.r,0,Math.PI*2); ctx.stroke(); ctx.restore();
+    }
+  }
+  function drawBackground(){
+    const w=canvas.width,h=canvas.height;
+    const g=ctx.createRadialGradient(w*0.5,h*0.2,10,w*0.5,h*0.6,Math.max(w,h)*0.8);
+    g.addColorStop(0,'#0f2433'); g.addColorStop(1,'#06131b');
+    ctx.fillStyle=g; ctx.fillRect(0,0,w,h);
+    // moon
+    const r = Math.min(w,h)*0.08;
+    ctx.save(); ctx.globalAlpha=0.8; ctx.fillStyle='#dfefff';
+    ctx.beginPath(); ctx.arc(w*0.82,h*0.18,r,0,Math.PI*2); ctx.fill();
+    ctx.globalAlpha=0.08; ctx.beginPath(); ctx.arc(w*0.82,h*0.18,r*2.4,0,Math.PI*2); ctx.fill(); ctx.restore();
+  }
+
+  /* ---- Koi ---- */
+  const koi = { x:0, y:0, vx:0, vy:0, speed:0.9*(devicePixelRatio||1), dir:0, target:{x:0,y:0} };
+  function initKoi(){ koi.x = canvas.width*0.25; koi.y = canvas.height*0.55; koi.target = { x:canvas.width*0.75, y:canvas.height*0.5 }; }
+  initKoi();
+  function drawKoi(){
+    ctx.save(); ctx.translate(koi.x,koi.y); ctx.rotate(koi.dir);
+    const dpr=(devicePixelRatio||1), bodyLen=70*dpr, bodyW=22*dpr, tailLen=26*dpr;
+    const grad=ctx.createLinearGradient(-bodyLen*0.3,0,bodyLen*0.6,0);
+    grad.addColorStop(0,'#fff6e8'); grad.addColorStop(0.6,'#ffd29a'); grad.addColorStop(1,'#f7b267');
+    ctx.fillStyle=grad; ctx.beginPath(); ctx.ellipse(0,0,bodyLen*0.4,bodyW,0,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#f47e3e'; ctx.beginPath(); ctx.arc(-bodyLen*0.15,0,bodyW*0.45,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#ffe3bf'; ctx.beginPath();
+    ctx.moveTo(bodyLen*0.45,0);
+    ctx.quadraticCurveTo(bodyLen*0.45+tailLen*0.6,-bodyW, bodyLen*0.45+tailLen,0);
+    ctx.quadraticCurveTo(bodyLen*0.45+tailLen*0.6, bodyW, bodyLen*0.45,0);
+    ctx.fill(); ctx.restore();
+  }
+
+  /* ---- Surprise & detection ---- */
+  let nextDecisionAt=0, baseSpeed=koi.speed, errActive=false, lastErrStart=0, activeId=null;
+  let total=0, hits=0, falseAlarms=0;
+
+  function sensitivityPreset(level){
+    if(level==='lenient')  return { window:1600, grace:250 };
+    if(level==='strict')   return { window:900,  grace:0   };
+    return { window:1200, grace:120 };
+  }
+  function pacePreset(level){
+    if(level==='soft'){ baseSpeed=0.75*(devicePixelRatio||1); return { decideMin:1400, decideMax:2400 }; }
+    if(level==='brisk'){ baseSpeed=1.05*(devicePixelRatio||1); return { decideMin:1100, decideMax:2000 }; }
+    baseSpeed=0.9*(devicePixelRatio||1); return { decideMin:1250, decideMax:2200 };
+  }
+  let sense = sensitivityPreset(senseSel.value);
+  let pace  = pacePreset(paceSel.value);
+
+  function chooseNewTarget(early=false){
+    const w=canvas.width,h=canvas.height, t=Math.random()*Math.PI*2, rx=w*0.35, ry=h*0.28, cx=w*0.5, cy=h*0.5;
+    let tx=cx+Math.cos(t)*rx, ty=cy+Math.sin(t)*ry;
+    if(early){ tx=cx+Math.cos(t+Math.PI/3)*rx*0.9; ty=cy+Math.sin(t+Math.PI/3)*ry*0.9; }
+    koi.target={x:tx,y:ty};
+  }
+  function scheduleNext(now){ nextDecisionAt = now + (pace.decideMin + Math.random()*(pace.decideMax-pace.decideMin)); }
+
+  /* ---- Session state ---- */
+  let running=false, paused=false, endAt=0, raf=0, timerRaf=0;
+
+  function showToast(msg){ toast.textContent=msg; toast.classList.add('show'); setTimeout(()=>toast.classList.remove('show'),1200); }
+  function mmss(s){ s=Math.max(0,Math.ceil(s)); const m=String(Math.floor(s/60)).padStart(2,'0'); const ss=String(s%60).padStart(2,'0'); return `${m}:${ss}`; }
+
+  function start(){
+    stop(false);
+    audio();
+    total=0; hits=0; falseAlarms=0;
+    activeId=null; ring.classList.remove('on');
+    sense = sensitivityPreset(senseSel.value);
+    pace  = pacePreset(paceSel.value);
+
+    running=true; paused=false;
+    endAt = performance.now() + Number(durSel.value)*1000;
+    timehud.hidden=false;
+
+    startBtn.disabled=true; pauseBtn.disabled=false; resumeBtn.disabled=true; stopBtn.disabled=false;
+    pond.focus();
+    scheduleNext(performance.now());
+    loop(); tickTimer();
+    if(!isFS()) enterFS();
+  }
+  function stop(show=true){
+    running=false; paused=false;
+    cancelAnimationFrame(raf); cancelAnimationFrame(timerRaf);
+    timehud.hidden=true;
+    startBtn.disabled=false; pauseBtn.disabled=true; resumeBtn.disabled=true; stopBtn.disabled=true;
+    if(show){
+      showToast('Session ended');
+      const pct = total ? Math.round((hits/total)*100) : 0;
+      sumText.innerHTML = `You noticed <b>${hits}</b> of <b>${total}</b> surprises (${pct}%).<br/>False taps: <b>${falseAlarms}</b>.`;
+      summaryModal.classList.add('open');
+    }
+  }
+  function pause(){
+    if(!running||paused) return;
+    paused=true; cancelAnimationFrame(raf); cancelAnimationFrame(timerRaf);
+    pauseBtn.disabled=true; resumeBtn.disabled=false;
+  }
+  function resume(){
+    if(!running||!paused) return;
+    paused=false; pond.focus();
+    resumeBtn.disabled=true; pauseBtn.disabled=false;
+    loop(); tickTimer();
+  }
+  function tickTimer(){
+    if(!running||paused) return;
+    const left = Math.max(0, endAt - performance.now());
+    timehud.textContent = mmss(left/1000);
+    if(left<=0){ stop(true); return; }
+    timerRaf = requestAnimationFrame(tickTimer);
+  }
+
+  /* ---- Interaction ---- */
+  let lastTapAt=0;
+  function flag(){
+    if(!running||paused) return;
+    const now = performance.now();
+    if(now - lastTapAt < 120) return; // debounce
+    lastTapAt = now;
+
+    addRipple(koi.x, koi.y);
+    if(errActive){
+      const elapsed = now - lastErrStart;
+      if(elapsed <= sense.window + sense.grace){
+        hits++; errActive=false; activeId=null; ring.classList.remove('on');
+        rewardChord(); burstPetals(koi.x, koi.y);
+      } else { falseAlarms++; }
+    } else { falseAlarms++; }
+  }
+  pond.addEventListener('click', flag, {passive:true});
+  window.addEventListener('keydown', e=>{ if(e.code==='Space'){ e.preventDefault(); flag(); }});
+
+  /* ---- UI events ---- */
+  howBtn.addEventListener('click', ()=> alert(
+`Koi Pond — How to play
+
+• Watch the koi glide.
+• Sometimes it subtly changes speed or turns early (a surprise).
+• Tap when you notice a change. Rewards reinforce noticing.
+
+Use Start, Pause/Resume, and Stop. “Sensitivity” controls how long a surprise is “countable”.
+Tip: You’re training your brain to recognise prediction errors and find them safe.`));
+
+  startBtn.addEventListener('click', start);
+  stopBtn.addEventListener('click', ()=> stop(true));
+  pauseBtn.addEventListener('click', pause);
+  resumeBtn.addEventListener('click', resume);
+
+  closeSum.addEventListener('click', ()=> summaryModal.classList.remove('open'));
+  restartBtn.addEventListener('click', ()=>{ summaryModal.classList.remove('open'); start(); });
+
+  toggleUI.addEventListener('click', ()=>{
+    const nowHidden = (fsBtn.style.display !== 'none'); // current visible => will hide
+    [fsBtn,startBtn,pauseBtn,resumeBtn,stopBtn,howBtn,durSel,paceSel,senseSel,timehud,downloadBtn].forEach(el=> el.style.display = nowHidden? 'none':'');
+    toggleUI.textContent = nowHidden? 'Show UI' : 'Hide UI';
+    credit.style.opacity = nowHidden? .0 : 1; // credit follows UI visibility without blocking taps
+  });
+
+  /* ---- Render loop ---- */
+  function loop(){
+    if(!running||paused) return;
+    const w=canvas.width,h=canvas.height,dpr=(devicePixelRatio||1);
+    ctx.clearRect(0,0,w,h);
+    drawBackground(); drawPetals();
+
+    // move koi
+    const dx=koi.target.x-koi.x, dy=koi.target.y-koi.y, dist=Math.hypot(dx,dy);
+    if(dist<6*dpr) chooseNewTarget(false);
+    koi.dir = Math.atan2(dy,dx);
+
+    const now = performance.now();
+    // decide/expire surprises
+    if(now>=nextDecisionAt){
+      const surprise = Math.random()<0.26;
+      if(surprise){
+        activeId = Math.random().toString(36).slice(2);
+        total++; errActive=true; lastErrStart=now; ring.classList.add('on');
+        if(Math.random()<0.5){
+          const mult = (Math.random()<0.5? 0.7 : 1.35);
+          const old = baseSpeed; baseSpeed = baseSpeed*mult;
+          setTimeout(()=>{ if(activeId){ baseSpeed = old; } }, 1400 + Math.random()*900);
+        } else {
+          chooseNewTarget(true);
+        }
+      } else { errActive=false; activeId=null; ring.classList.remove('on'); }
+      nextDecisionAt = now + (pace.decideMin + Math.random()*(pace.decideMax-pace.decideMin));
+    }
+    if(errActive && now - lastErrStart > sense.window + sense.grace){
+      errActive=false; activeId=null; ring.classList.remove('on');
+    }
+
+    const spd = baseSpeed;
+    koi.vx = Math.cos(koi.dir)*spd; koi.vy = Math.sin(koi.dir)*spd;
+    koi.x += koi.vx; koi.y += koi.vy;
+
+    const margin=30*dpr; if(koi.x<margin||koi.x>w-margin||koi.y<margin||koi.y>h-margin){ chooseNewTarget(true); }
+
+    drawKoi(); drawRipples();
+
+    raf = requestAnimationFrame(loop);
+    if(now>=endAt) stop(true);
+  }
+
+  // idle paint
+  (function idle(){ resize(); drawBackground(); drawPetals(); drawKoi(); requestAnimationFrame(idle); })();
+
+  /* ========= Download this page as a file ========= */
+  downloadBtn.addEventListener('click', () => {
+    const html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+    const blob = new Blob([html], {type:'text/html'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'prediction-error-training.html';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=> URL.revokeObjectURL(url), 1000);
+  });
+
+  /* ========= Minimal PWA (optional install & offline) ========= */
+  (async function makePWA(){
+    if (!('serviceWorker' in navigator)) return;
+    // Create and attach a tiny manifest on the fly
+    const manifest = {
+      name: "Koi Pond — Prediction Error Training",
+      short_name: "Koi Pond",
+      start_url: ".",
+      display: "standalone",
+      background_color: "#050b12",
+      theme_color: "#050b12",
+      icons: [] // add icons later if you host PNGs
+    };
+    const blobMan = new Blob([JSON.stringify(manifest)], {type: 'application/json'});
+    const manURL = URL.createObjectURL(blobMan);
+    const link = document.createElement('link');
+    link.rel = 'manifest'; link.href = manURL; document.head.appendChild(link);
+
+    // Inline service worker to cache this page
+    const swCode = `
+      const CACHE='koi-pond-v1';
+      self.addEventListener('install', e=>{
+        e.waitUntil(caches.open(CACHE).then(c=>c.addAll(['./'])));
+        self.skipWaiting();
+      });
+      self.addEventListener('activate', e=>{ e.waitUntil(self.clients.claim()); });
+      self.addEventListener('fetch', e=>{
+        e.respondWith(
+          caches.match(e.request).then(r=> r || fetch(e.request).then(resp=>{
+            try{
+              const url = new URL(e.request.url);
+              if (url.origin === location.origin && (url.pathname==='/' || url.pathname.endsWith('.html'))) {
+                const clone = resp.clone(); caches.open(CACHE).then(c=>c.put(e.request, clone));
+              }
+            }catch(e){}
+            return resp;
+          }).catch(()=> caches.match('./')))
+        );
+      });
+    `;
+    const swURL = URL.createObjectURL(new Blob([swCode], {type:'text/javascript'}));
+    try { await navigator.serviceWorker.register(swURL); } catch {}
+  })();
+});
+</script>
+</body>
+</html>
