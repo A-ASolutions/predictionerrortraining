@@ -1,0 +1,978 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no"/>
+<title>Koi Pond — Prediction Error Training</title>
+<meta name="theme-color" content="#040a10"/>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;1,300;1,400&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --fg: #e8f2ff;
+  --muted: #6e90ab;
+  --w1: #040a10; --w2: #081420;
+  --panel: rgba(8,18,28,0.88);
+  --border: rgba(140,200,255,0.11);
+  --ok: #78e8a4;
+  --warn: #f0c870;
+  --font-d: 'Cormorant Garamond', Georgia, serif;
+  --font-b: 'DM Sans', system-ui, sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box;}
+html,body{margin:0;padding:0;height:100%;background:var(--w1);color:var(--fg);
+  font-family:var(--font-b);overflow:hidden;
+  user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent;}
+.pond-wrap{position:fixed;inset:0;display:grid;place-items:center;}
+.pond{position:relative;width:100vw;height:100%;
+  background:radial-gradient(140% 150% at 50% 4%,var(--w2) 0%,var(--w1) 68%);overflow:hidden;}
+canvas{display:block;width:100%;height:100%;touch-action:none;}
+
+/* ── UI Layer ── */
+#ui-layer{position:absolute;inset:0;pointer-events:none;z-index:10;}
+
+/* ── Screens ── */
+.screen{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+  padding:max(28px,env(safe-area-inset-top)) 24px max(28px,env(safe-area-inset-bottom));
+  opacity:0;pointer-events:none;transition:opacity 0.4s ease;}
+.screen.active{opacity:1;pointer-events:auto;}
+.screen.hidden{display:none;}
+
+/* ── Lobby ── */
+#screen-lobby{justify-content:flex-end;
+  padding-bottom:max(96px,calc(env(safe-area-inset-bottom)+80px));
+  background:transparent;}
+.title-card{position:absolute;top:17%;width:100%;text-align:center;
+  text-shadow:0 4px 32px rgba(0,0,0,0.95);padding:0 24px;}
+.title-card h1{font-family:var(--font-d);font-size:clamp(3rem,9vw,4.6rem);
+  font-weight:300;letter-spacing:0.03em;margin:0;line-height:1;}
+.title-card h1 em{font-style:italic;}
+.title-card .sub{color:var(--muted);margin-top:10px;font-size:0.78rem;
+  letter-spacing:0.18em;text-transform:uppercase;font-weight:300;}
+.lobby-row{display:flex;gap:12px;align-items:center;}
+
+/* ── Psychoeducation ── */
+#screen-intro{background:rgba(4,10,16,0.9);backdrop-filter:blur(20px);
+  -webkit-backdrop-filter:blur(20px);justify-content:center;}
+.intro-wrap{width:100%;max-width:400px;flex:1;position:relative;display:flex;align-items:center;}
+.slide{position:absolute;width:100%;text-align:center;padding:0 6px;
+  opacity:0;transform:translateY(20px);
+  transition:opacity 0.5s ease,transform 0.5s ease;pointer-events:none;}
+.slide.active{opacity:1;transform:none;pointer-events:auto;}
+.slide-icon{font-size:2.6rem;display:block;margin-bottom:22px;
+  filter:drop-shadow(0 0 14px rgba(120,232,164,0.45));}
+.slide h2{font-family:var(--font-d);font-size:clamp(1.65rem,5vw,2.1rem);font-weight:400;
+  margin:0 0 16px;line-height:1.2;color:var(--fg);}
+.slide p{color:var(--muted);font-size:0.97rem;line-height:1.68;margin:0;font-weight:300;}
+.slide p strong{color:#c8dff5;font-weight:500;}
+.dots{display:flex;gap:9px;justify-content:center;margin:30px 0 22px;}
+.dot{width:6px;height:6px;border-radius:50%;background:rgba(140,200,255,0.15);
+  border:1px solid rgba(140,200,255,0.25);transition:background 0.3s,transform 0.3s;}
+.dot.active{background:var(--ok);transform:scale(1.35);border-color:var(--ok);}
+.intro-nav{display:flex;gap:10px;width:100%;max-width:400px;margin-bottom:16px;}
+
+/* ── HUD ── */
+#screen-hud{background:transparent;
+  padding:max(14px,env(safe-area-inset-top)) 14px 0;
+  justify-content:space-between;}
+.hud-top{width:100%;display:flex;justify-content:space-between;align-items:flex-start;}
+.catch-ctr{font-family:var(--font-d);font-size:1.7rem;font-weight:300;color:var(--ok);
+  text-shadow:0 0 22px rgba(120,232,164,0.55);min-width:34px;text-align:center;
+  line-height:1;padding-top:3px;}
+.prog-wrap{position:absolute;bottom:0;left:0;width:100%;height:3px;
+  background:rgba(255,255,255,0.05);}
+.prog-bar{height:100%;background:linear-gradient(90deg,var(--ok),#aaf5cc);width:100%;
+  transition:width 1s linear;box-shadow:0 0 10px rgba(120,232,164,0.4);}
+
+/* ── Pause ── */
+#pause-overlay{position:absolute;inset:0;background:rgba(0,0,0,0.68);
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  display:none;flex-direction:column;align-items:center;justify-content:center;
+  gap:16px;z-index:20;pointer-events:auto;}
+#pause-overlay.on{display:flex;}
+.pause-lbl{font-family:var(--font-d);font-size:1.3rem;font-weight:300;
+  color:var(--muted);letter-spacing:0.14em;text-transform:uppercase;}
+
+/* ── Buttons ── */
+button{background:var(--panel);border:1px solid var(--border);color:var(--fg);
+  padding:12px 24px;border-radius:99px;font-family:var(--font-b);
+  font-size:0.92rem;font-weight:500;cursor:pointer;
+  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  transition:transform 0.1s,background 0.2s,box-shadow 0.2s;
+  box-shadow:0 4px 20px rgba(0,0,0,0.45);pointer-events:auto;
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;outline:none;
+  -webkit-tap-highlight-color:transparent;}
+button:active{transform:scale(0.94);}
+button.primary{background:rgba(120,232,164,0.12);border-color:rgba(120,232,164,0.35);
+  color:var(--ok);box-shadow:0 4px 20px rgba(120,232,164,0.12),inset 0 1px 0 rgba(120,232,164,0.08);}
+button.primary:active{background:rgba(120,232,164,0.22);}
+button.icon-btn{padding:0;width:46px;height:46px;border-radius:50%;
+  background:rgba(0,0,0,0.38);border-color:rgba(255,255,255,0.09);}
+button.ghost{background:transparent;border-color:transparent;
+  color:var(--muted);box-shadow:none;font-size:0.84rem;}
+button.full{width:100%;}
+
+/* ── Modals ── */
+.modal{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,0.78);
+  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  display:grid;place-items:center;padding:20px;
+  opacity:0;pointer-events:none;transition:opacity 0.32s ease;}
+.modal.open{opacity:1;pointer-events:auto;}
+.modal.hidden{display:none;}
+.card{background:#0b1822;border:1px solid var(--border);border-radius:26px;
+  padding:28px;width:100%;max-width:420px;
+  box-shadow:0 32px 64px rgba(0,0,0,0.75),0 0 0 1px rgba(255,255,255,0.03);
+  transform:translateY(26px) scale(0.97);
+  transition:transform 0.36s cubic-bezier(0.22,0.9,0.22,1.08);}
+.modal.open .card{transform:none;}
+.card h2{font-family:var(--font-d);font-size:1.65rem;font-weight:400;margin:0 0 6px;color:var(--fg);}
+.card-sub{color:var(--muted);font-size:0.82rem;margin-bottom:24px;font-weight:300;}
+.card p{color:var(--muted);line-height:1.62;margin-bottom:14px;font-size:0.93rem;font-weight:300;}
+
+/* ── Settings Pills ── */
+.sg{margin-bottom:20px;}
+.sg-label{display:flex;justify-content:space-between;align-items:center;
+  color:var(--muted);font-size:0.75rem;margin-bottom:10px;
+  text-transform:uppercase;letter-spacing:0.1em;}
+.sg-label span{color:var(--fg);text-transform:none;letter-spacing:0;font-size:0.88rem;}
+.pills{display:flex;gap:6px;}
+.pill{flex:1;padding:10px 6px;border-radius:12px;background:rgba(255,255,255,0.03);
+  border:1px solid var(--border);color:var(--muted);font-size:0.83rem;
+  font-family:var(--font-b);cursor:pointer;text-align:center;transition:all 0.2s;
+  -webkit-tap-highlight-color:transparent;}
+.pill.on{background:rgba(120,232,164,0.1);border-color:rgba(120,232,164,0.32);color:var(--ok);}
+.tog-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;}
+.tog-info .tog-title{font-size:0.9rem;color:var(--fg);}
+.tog-info .tog-desc{font-size:0.76rem;color:var(--muted);margin-top:3px;font-weight:300;}
+.tog{position:relative;width:44px;height:26px;flex-shrink:0;margin-left:16px;}
+.tog input{opacity:0;width:0;height:0;position:absolute;}
+.tog-track{position:absolute;inset:0;background:rgba(255,255,255,0.08);
+  border:1px solid var(--border);border-radius:99px;cursor:pointer;
+  transition:background 0.2s,border-color 0.2s;}
+.tog-track::after{content:'';position:absolute;left:3px;top:50%;transform:translateY(-50%);
+  width:18px;height:18px;border-radius:50%;background:var(--muted);
+  transition:transform 0.22s,background 0.22s;}
+.tog input:checked+.tog-track{background:rgba(120,232,164,0.18);border-color:rgba(120,232,164,0.38);}
+.tog input:checked+.tog-track::after{transform:translate(18px,-50%);background:var(--ok);}
+.set-footer{display:flex;gap:10px;margin-top:22px;padding-top:20px;border-top:1px solid var(--border);}
+
+/* ── Summary ── */
+#modal-summary .card{text-align:center;padding:30px 24px 24px;}
+.sum-hdr h2{font-family:var(--font-d);font-size:1.75rem;font-weight:300;margin:0 0 4px;}
+.sum-date{font-size:0.76rem;color:var(--muted);letter-spacing:0.06em;margin-bottom:26px;}
+.score-ring{position:relative;width:118px;height:118px;margin:0 auto 22px;}
+.score-ring svg{transform:rotate(-90deg);}
+.ring-bg{fill:none;stroke:rgba(255,255,255,0.05);stroke-width:5.5;}
+.ring-fill{fill:none;stroke:var(--ok);stroke-width:5.5;stroke-linecap:round;
+  stroke-dasharray:301.6;stroke-dashoffset:301.6;
+  transition:stroke-dashoffset 1.3s cubic-bezier(0.4,0,0.2,1);
+  filter:drop-shadow(0 0 7px rgba(120,232,164,0.55));}
+.score-inner{position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;}
+.score-num{font-family:var(--font-d);font-size:3rem;font-weight:300;color:var(--ok);line-height:1;}
+.score-lbl{font-size:0.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.09em;margin-top:2px;}
+.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-bottom:16px;}
+.stat-box{background:rgba(255,255,255,0.025);border:1px solid var(--border);
+  border-radius:14px;padding:13px 10px;}
+.stat-val{font-family:var(--font-d);font-size:1.55rem;font-weight:300;line-height:1;color:var(--fg);}
+.stat-key{font-size:0.7rem;color:var(--muted);margin-top:4px;text-transform:uppercase;letter-spacing:0.06em;}
+.insight-box{background:rgba(120,232,164,0.05);border:1px solid rgba(120,232,164,0.13);
+  border-radius:14px;padding:14px 16px;margin-bottom:16px;
+  font-family:var(--font-d);font-style:italic;font-size:0.98rem;
+  color:#a0d4b8;line-height:1.58;}
+.streak{display:inline-flex;align-items:center;gap:6px;
+  background:rgba(240,200,112,0.09);border:1px solid rgba(240,200,112,0.22);
+  border-radius:99px;padding:5px 12px;font-size:0.78rem;color:var(--warn);
+  margin-bottom:16px;}
+.hist-lbl{font-size:0.7rem;color:var(--muted);text-transform:uppercase;
+  letter-spacing:0.07em;margin-bottom:8px;}
+.hist-bars{display:flex;gap:5px;justify-content:center;align-items:flex-end;
+  height:26px;margin-bottom:20px;}
+.hbar{width:14px;background:rgba(120,232,164,0.22);border-radius:3px 3px 0 0;min-height:4px;}
+.hbar.cur{background:var(--ok);box-shadow:0 0 8px rgba(120,232,164,0.4);}
+.sum-actions{display:flex;gap:10px;}
+
+/* ── Onboarding hint ── */
+#hint{position:absolute;inset:0;pointer-events:none;z-index:15;
+  opacity:0;transition:opacity 0.6s ease;}
+#hint.on{opacity:1;}
+.hint-ring{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  width:60px;height:60px;border:1.5px solid rgba(120,232,164,0.5);
+  border-radius:50%;animation:hint-pulse 1.8s ease-in-out infinite;}
+.hint-ring2{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  width:80px;height:80px;border:1px solid rgba(120,232,164,0.25);
+  border-radius:50%;animation:hint-pulse 1.8s ease-in-out 0.3s infinite;}
+@keyframes hint-pulse{0%,100%{opacity:0.6;transform:translate(-50%,-50%) scale(1);}
+  50%{opacity:0.2;transform:translate(-50%,-50%) scale(1.15);}}
+.hint-txt{position:absolute;top:calc(50% + 56px);width:100%;text-align:center;
+  font-size:0.8rem;color:rgba(160,210,255,0.65);letter-spacing:0.1em;text-transform:uppercase;}
+
+/* ── Surprise ring ── */
+.ring{position:absolute;inset:14px;border:1.5px solid rgba(120,232,164,0.2);
+  border-radius:30px;opacity:0;pointer-events:none;transition:opacity 0.25s,border-color 0.25s;}
+.ring.on{opacity:1;border-color:rgba(120,232,164,0.45);animation:rpulse 1.4s ease-in-out infinite;}
+@keyframes rpulse{0%,100%{box-shadow:inset 0 0 0 rgba(120,232,164,0);}
+  50%{box-shadow:inset 0 0 28px rgba(120,232,164,0.07);}}
+
+/* ── Flash ── */
+#flash{position:absolute;inset:0;pointer-events:none;z-index:8;
+  opacity:0;transition:opacity 0.1s ease;}
+
+.credit{position:fixed;bottom:max(52px,calc(env(safe-area-inset-bottom)+46px));left:50%;
+  transform:translateX(-50%);background:rgba(8,18,28,0.72);border:1px solid var(--border);
+  color:rgba(110,144,171,0.55);padding:5px 13px;border-radius:99px;
+  font-size:0.68rem;white-space:nowrap;z-index:60;pointer-events:none;font-weight:300;}
+.hidden{display:none!important;}
+</style>
+</head>
+<body>
+
+<div class="pond-wrap">
+<div class="pond" id="pond">
+  <canvas id="c"></canvas>
+  <div id="surprise-ring" class="ring"></div>
+  <div id="flash"></div>
+
+  <!-- Onboarding hint -->
+  <div id="hint">
+    <div class="hint-ring"></div>
+    <div class="hint-ring2"></div>
+    <div class="hint-txt">tap when you notice a change</div>
+  </div>
+
+  <div id="ui-layer">
+
+    <!-- LOBBY -->
+    <div id="screen-lobby" class="screen active">
+      <div class="title-card">
+        <h1><em>Koi</em> Pond</h1>
+        <div class="sub">Prediction Error Training</div>
+      </div>
+      <div class="lobby-row">
+        <button class="icon-btn" id="btn-settings" aria-label="Settings">
+          <svg width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-2.82 1.17V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-2.82-1.17l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 2.82 1.17l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+        <button class="primary" id="btn-start" style="padding:13px 46px;font-size:1rem;">Begin</button>
+        <button class="icon-btn" id="btn-help" aria-label="Help" style="font-family:var(--font-d);font-size:1.15rem;">?</button>
+      </div>
+    </div>
+
+    <!-- INTRO / PSYCHOEDUCATION -->
+    <div id="screen-intro" class="screen hidden">
+      <div style="height:max(44px,env(safe-area-inset-top))"></div>
+      <div class="intro-wrap">
+        <div class="slide active" data-s="0">
+          <span class="slide-icon">🧠</span>
+          <h2>Your brain predicts everything</h2>
+          <p>Every moment, your nervous system builds a model of what comes next — and flags <strong>anything unexpected</strong> as potentially significant.</p>
+        </div>
+        <div class="slide" data-s="1">
+          <span class="slide-icon">〰</span>
+          <h2>Surprise can become safety</h2>
+          <p>When the brain learns that <strong>noticing surprise leads to reward</strong> rather than threat, it begins to rewrite the association. This is prediction error training.</p>
+        </div>
+        <div class="slide" data-s="2">
+          <span class="slide-icon">🐟</span>
+          <h2>Watch. Notice. Tap.</h2>
+          <p>The koi will occasionally <strong>change speed or direction</strong> unexpectedly. Tap when you notice. Let each surprise become a small moment of calm recognition.</p>
+        </div>
+      </div>
+      <div class="dots">
+        <div class="dot active" data-d="0"></div>
+        <div class="dot" data-d="1"></div>
+        <div class="dot" data-d="2"></div>
+      </div>
+      <div class="intro-nav">
+        <button class="ghost" id="btn-skip" style="flex:0;padding:12px 18px;">Skip</button>
+        <button class="primary full" id="btn-next">Next</button>
+      </div>
+    </div>
+
+    <!-- HUD -->
+    <div id="screen-hud" class="screen hidden">
+      <div class="hud-top">
+        <button class="icon-btn" id="btn-stop">
+          <svg width="15" height="15" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+        </button>
+        <div class="catch-ctr" id="catch-ctr">0</div>
+        <button class="icon-btn" id="btn-pause">
+          <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.6" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+        </button>
+      </div>
+      <div class="prog-wrap"><div id="prog" class="prog-bar"></div></div>
+    </div>
+
+    <!-- PAUSE OVERLAY -->
+    <div id="pause-overlay">
+      <div class="pause-lbl">Paused</div>
+      <button class="primary" id="btn-resume" style="font-size:1rem;padding:14px 50px;">Resume</button>
+    </div>
+
+  </div><!-- /ui-layer -->
+</div><!-- /pond -->
+</div><!-- /wrap -->
+
+<!-- SETTINGS MODAL -->
+<div id="modal-settings" class="modal hidden">
+  <div class="card">
+    <h2>Settings</h2>
+    <div class="card-sub">Personalise your session</div>
+    <div class="sg">
+      <div class="sg-label">Duration <span id="dur-lbl">2 min</span></div>
+      <div class="pills" id="dur-pills">
+        <div class="pill" data-v="60">1 min</div>
+        <div class="pill on" data-v="120">2 min</div>
+        <div class="pill" data-v="180">3 min</div>
+        <div class="pill" data-v="300">5 min</div>
+      </div>
+    </div>
+    <div class="sg">
+      <div class="sg-label">Pace <span id="pace-lbl">Gentle</span></div>
+      <div class="pills" id="pace-pills">
+        <div class="pill on" data-v="soft">Gentle</div>
+        <div class="pill" data-v="medium">Steady</div>
+        <div class="pill" data-v="brisk">Brisk</div>
+      </div>
+    </div>
+    <div class="sg">
+      <div class="sg-label">Sensitivity <span id="sense-lbl">Lenient</span></div>
+      <div class="pills" id="sense-pills">
+        <div class="pill on" data-v="lenient">Lenient</div>
+        <div class="pill" data-v="standard">Standard</div>
+        <div class="pill" data-v="strict">Strict</div>
+      </div>
+    </div>
+    <div class="tog-row">
+      <div class="tog-info">
+        <div class="tog-title">Breath guide</div>
+        <div class="tog-desc">Soft expanding circle to anchor attention</div>
+      </div>
+      <label class="tog"><input type="checkbox" id="tog-breath" checked><div class="tog-track"></div></label>
+    </div>
+    <div class="tog-row">
+      <div class="tog-info">
+        <div class="tog-title">Ambient signal</div>
+        <div class="tog-desc">Subtle water tint during prediction errors</div>
+      </div>
+      <label class="tog"><input type="checkbox" id="tog-ambient" checked><div class="tog-track"></div></label>
+    </div>
+    <div class="set-footer">
+      <button id="btn-dl" style="flex:1;border-radius:12px;font-size:0.83rem;">
+        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Save file
+      </button>
+      <button id="close-settings" class="primary" style="flex:2">Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- HELP MODAL -->
+<div id="modal-help" class="modal hidden">
+  <div class="card">
+    <h2>How it works</h2>
+    <p>Watch the koi glide. Every so often it will <strong style="color:var(--fg)">change speed or turn unexpectedly</strong> — a prediction error.</p>
+    <p>When you notice, <strong style="color:var(--fg)">tap anywhere</strong>. The gentle reward that follows begins to rewire how your nervous system responds to surprise.</p>
+    <p style="border-top:1px solid var(--border);padding-top:14px;margin-bottom:0;font-size:0.85rem;">Based on predictive coding theory — the idea that anxiety involves the brain treating uncertainty as threat. Regular practice gently shifts that association toward safety.</p>
+    <button class="primary full" id="close-help" style="margin-top:20px;">Got it</button>
+  </div>
+</div>
+
+<!-- SUMMARY MODAL -->
+<div id="modal-summary" class="modal hidden">
+  <div class="card">
+    <div class="sum-hdr">
+      <h2>Session Complete</h2>
+      <div class="sum-date" id="sum-date"></div>
+    </div>
+    <div class="score-ring">
+      <svg viewBox="0 0 120 120" width="120" height="120">
+        <circle class="ring-bg" cx="60" cy="60" r="48"/>
+        <circle class="ring-fill" id="sum-ring" cx="60" cy="60" r="48"/>
+      </svg>
+      <div class="score-inner">
+        <div class="score-num" id="sum-score">0</div>
+        <div class="score-lbl">caught</div>
+      </div>
+    </div>
+    <div class="stat-grid">
+      <div class="stat-box"><div class="stat-val" id="sum-pct">—</div><div class="stat-key">Awareness</div></div>
+      <div class="stat-box"><div class="stat-val" id="sum-fa">—</div><div class="stat-key">False Alarms</div></div>
+      <div class="stat-box"><div class="stat-val" id="sum-total">—</div><div class="stat-key">Changes</div></div>
+      <div class="stat-box"><div class="stat-val" id="sum-dur">—</div><div class="stat-key">Duration</div></div>
+    </div>
+    <div class="insight-box" id="sum-insight"></div>
+    <div class="streak hidden" id="streak"><span>🔥</span><span id="streak-n">0</span> day streak</div>
+    <div class="hidden" id="hist-section">
+      <div class="hist-lbl">Recent sessions</div>
+      <div class="hist-bars" id="hist-bars"></div>
+    </div>
+    <div class="sum-actions">
+      <button id="btn-home" style="flex:1">Menu</button>
+      <button id="btn-restart" class="primary" style="flex:2">Practice again</button>
+    </div>
+  </div>
+</div>
+
+<div class="credit">Meaningful Path Therapy · Abdullah Al-Shoaibi</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const $ = id => document.getElementById(id);
+  const pond = $('pond'), canvas = $('c');
+  const ctx = canvas.getContext('2d', { alpha: false });
+
+  // ── Audio ─────────────────────────────────────────────────────────────────
+  const AC = window.AudioContext || window.webkitAudioContext;
+  let ac = null;
+  function getAC() { if (!ac) try { ac = new AC(); } catch {} return ac; }
+
+  function rewardChord() {
+    const a = getAC(); if (!a) return;
+    if (a.state === 'suspended') a.resume();
+    [523.25, 659.25, 783.99].forEach((f, i) => {
+      const o = a.createOscillator(), g = a.createGain();
+      const t = a.currentTime + i * 0.07;
+      o.type = 'sine'; o.frequency.value = f;
+      g.gain.setValueAtTime(0.001, t);
+      g.gain.exponentialRampToValueAtTime(0.042, t + 0.04);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.52);
+      o.connect(g).connect(a.destination);
+      o.start(t); o.stop(t + 0.55);
+    });
+    if (navigator.vibrate) navigator.vibrate(24);
+  }
+
+  // ── State ─────────────────────────────────────────────────────────────────
+  let st = {
+    screen: 'lobby', dpr: 1,
+    koi: { x: 0, y: 0, vx: 0, vy: 0, dir: 0, target: { x: 0, y: 0 } },
+    baseSpeed: 0, nextDecAt: 0,
+    errActive: false, lastErrStart: 0, activeId: null,
+    total: 0, hits: 0, fa: 0,
+    endAt: 0, duration: 120,
+    paceP: {}, senseP: {}, raf: 0,
+    cfg: { dur: 120, pace: 'soft', sense: 'lenient', breath: true, ambient: true }
+  };
+
+  // ── Resize ────────────────────────────────────────────────────────────────
+  function resize() {
+    const r = pond.getBoundingClientRect();
+    st.dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(2, Math.round(r.width * st.dpr));
+    canvas.height = Math.max(2, Math.round(r.height * st.dpr));
+  }
+  resize(); window.addEventListener('resize', resize);
+
+  // ── Presets ───────────────────────────────────────────────────────────────
+  const PACES = {
+    soft:   { min: 1500, max: 2700, sm: 0.75 },
+    medium: { min: 1200, max: 2100, sm: 1.0 },
+    brisk:  { min: 960,  max: 1750, sm: 1.38 }
+  };
+  const SENSES = {
+    lenient:  { win: 1700, grace: 280 },
+    standard: { win: 1200, grace: 120 },
+    strict:   { win: 850,  grace: 0 }
+  };
+
+  // ── Storage ───────────────────────────────────────────────────────────────
+  const LS = {
+    get hist() { try { return JSON.parse(localStorage.getItem('koi_h') || '[]'); } catch { return []; } },
+    push(d) { try { const h = this.hist; h.push(d); if (h.length > 12) h.splice(0, h.length - 12); localStorage.setItem('koi_h', JSON.stringify(h)); } catch {} },
+    streak() {
+      try {
+        const dates = [...new Set(this.hist.map(s => new Date(s.date).toDateString()))];
+        let n = 0, d = new Date();
+        for (let i = 0; i < 30; i++) {
+          if (dates.includes(d.toDateString())) { n++; d.setDate(d.getDate() - 1); }
+          else if (i === 0) { d.setDate(d.getDate() - 1); if (!dates.includes(d.toDateString())) break; }
+          else break;
+        }
+        return n;
+      } catch { return 0; }
+    },
+    firstVisit() {
+      try { if (!localStorage.getItem('koi_v')) { localStorage.setItem('koi_v', '1'); return true; } return false; } catch { return false; }
+    },
+    seenIntro() {
+      try { if (!localStorage.getItem('koi_i')) { localStorage.setItem('koi_i', '1'); return false; } return true; } catch { return true; }
+    }
+  };
+
+  // ── Visual pools ──────────────────────────────────────────────────────────
+  const ripples = [], petals = [], floats = [];
+
+  function addRipple(x, y, col = '#b8e8ff') { ripples.push({ x, y, r: 6, a: 0.5, col }); }
+
+  function spawnPetal(x, y, burst = false) {
+    const d = st.dpr;
+    petals.push({
+      x: x ?? Math.random() * canvas.width, y: y ?? -20,
+      vy: (burst ? (Math.random() - 0.5) * 5.5 : 0.2 + Math.random() * 0.48) * d,
+      vx: (burst ? (Math.random() - 0.5) * 5.5 : (Math.random() * 0.5 - 0.25)) * d,
+      r: (2.5 + Math.random() * 3) * d, rot: Math.random() * Math.PI * 2,
+      vr: Math.random() * 0.025 - 0.012
+    });
+  }
+
+  function spawnFloat(x, y, text, col = '#78e8a4') {
+    floats.push({ x, y, text, col, a: 0.95, vy: -1.9 * st.dpr, life: 68 });
+  }
+
+  let flashT = null;
+  function flash(bg, op, ms = 380) {
+    const el = $('flash');
+    if (flashT) clearTimeout(flashT);
+    el.style.background = bg; el.style.opacity = op;
+    flashT = setTimeout(() => { el.style.opacity = 0; }, ms);
+  }
+
+  // ── Drawing ───────────────────────────────────────────────────────────────
+  function drawBg() {
+    const w = canvas.width, h = canvas.height;
+    const g = ctx.createRadialGradient(w*.5, h*.12, 8, w*.5, h*.7, Math.max(w,h)*.95);
+    g.addColorStop(0, '#0e2234'); g.addColorStop(1, '#04101a');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+    // Moon
+    const mr = Math.min(w, h) * 0.068;
+    ctx.save();
+    ctx.globalAlpha = 0.72; ctx.fillStyle = '#e4f2ff';
+    ctx.beginPath(); ctx.arc(w*.82, h*.15, mr, 0, Math.PI*2); ctx.fill();
+    ctx.globalAlpha = 0.055;
+    ctx.beginPath(); ctx.arc(w*.82, h*.15, mr*2.7, 0, Math.PI*2); ctx.fill();
+    // Subtle water shimmer line
+    ctx.globalAlpha = 0.03; ctx.strokeStyle = '#c0e0ff'; ctx.lineWidth = 1;
+    for (let i = 0; i < 4; i++) {
+      ctx.beginPath(); ctx.moveTo(0, h*(0.38+i*0.12));
+      ctx.bezierCurveTo(w*.3, h*(0.36+i*0.12), w*.7, h*(0.40+i*0.12), w, h*(0.38+i*0.12));
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawAmbient() {
+    if (!st.cfg.ambient || !st.errActive) return;
+    ctx.save(); ctx.globalAlpha = 0.08;
+    ctx.fillStyle = '#30c8ee';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
+  }
+
+  function drawBreath() {
+    if (!st.cfg.breath || st.screen !== 'running') return;
+    const t = (performance.now() % 8000) / 8000;
+    const phase = t < 0.5 ? t * 2 : 1 - (t - 0.5) * 2;
+    const s = Math.min(canvas.width, canvas.height);
+    const r = s * (0.042 + phase * 0.072);
+    ctx.save(); ctx.globalAlpha = 0.035 + phase * 0.05;
+    ctx.strokeStyle = '#88ccee'; ctx.lineWidth = 1.4 * st.dpr;
+    ctx.beginPath(); ctx.arc(canvas.width/2, canvas.height/2, r, 0, Math.PI*2); ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawPetals() {
+    ctx.save(); ctx.fillStyle = '#ffcce2';
+    const W = canvas.width, H = canvas.height;
+    for (let i = petals.length - 1; i >= 0; i--) {
+      const p = petals[i]; p.y += p.vy; p.x += p.vx; p.rot += p.vr;
+      if (p.y > H + 30 || p.x < -30 || p.x > W + 30) {
+        if (st.screen === 'running' && Math.random() > 0.08)
+          Object.assign(p, { y: -10, x: Math.random()*W, vx: (Math.random()*.48-.24)*st.dpr, vy: (0.2+Math.random()*.48)*st.dpr });
+        else petals.splice(i, 1);
+      } else {
+        ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot);
+        ctx.globalAlpha = 0.62;
+        ctx.beginPath(); ctx.ellipse(0, 0, p.r*.72, p.r, 0, 0, Math.PI*2); ctx.fill();
+        ctx.restore();
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawRipples() {
+    for (let i = ripples.length - 1; i >= 0; i--) {
+      const rp = ripples[i]; rp.r += 2.3 * st.dpr; rp.a *= 0.953;
+      if (rp.a < 0.018) { ripples.splice(i, 1); continue; }
+      ctx.save(); ctx.globalAlpha = rp.a; ctx.strokeStyle = rp.col;
+      ctx.lineWidth = 1.4 * st.dpr;
+      ctx.beginPath(); ctx.arc(rp.x, rp.y, rp.r, 0, Math.PI*2); ctx.stroke(); ctx.restore();
+    }
+  }
+
+  function drawFloats() {
+    ctx.save();
+    for (let i = floats.length - 1; i >= 0; i--) {
+      const f = floats[i]; f.y += f.vy; f.a -= 0.014; f.life--;
+      if (f.life <= 0) { floats.splice(i, 1); continue; }
+      ctx.globalAlpha = Math.max(0, f.a); ctx.fillStyle = f.col;
+      ctx.font = `${Math.round(20 * st.dpr)}px 'DM Sans', sans-serif`;
+      ctx.textAlign = 'center'; ctx.fillText(f.text, f.x, f.y);
+    }
+    ctx.restore();
+  }
+
+  let koiGlow = 0;
+  function drawKoi() {
+    const k = st.koi, d = st.dpr;
+    const bL = 68*d, bW = 20*d, tL = 24*d;
+    ctx.save(); ctx.translate(k.x, k.y); ctx.rotate(k.dir);
+
+    if (koiGlow > 0) {
+      ctx.save(); ctx.globalAlpha = koiGlow * 0.38;
+      ctx.shadowBlur = 28*d; ctx.shadowColor = '#78e8a4';
+      ctx.fillStyle = '#78e8a4';
+      ctx.beginPath(); ctx.ellipse(0, 0, bL*.44, bW*1.35, 0, 0, Math.PI*2); ctx.fill();
+      ctx.restore();
+      koiGlow = Math.max(0, koiGlow - 0.028);
+    }
+
+    const gr = ctx.createLinearGradient(-bL*.28, 0, bL*.48, 0);
+    gr.addColorStop(0, '#fff8ef'); gr.addColorStop(0.52, '#ffcc82'); gr.addColorStop(1, '#f4a450');
+    ctx.fillStyle = gr;
+    ctx.beginPath(); ctx.ellipse(0, 0, bL*.37, bW, 0, 0, Math.PI*2); ctx.fill();
+
+    ctx.fillStyle = '#ee5e28';
+    ctx.beginPath(); ctx.arc(-bL*.13, 0, bW*.4, 0, Math.PI*2); ctx.fill();
+
+    ctx.fillStyle = 'rgba(255,215,140,0.38)';
+    ctx.beginPath(); ctx.ellipse(0, -bW*.78, bL*.11, bW*.32, -0.5, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(0,  bW*.78, bL*.11, bW*.32,  0.5, 0, Math.PI*2); ctx.fill();
+
+    const sw = Math.sin(performance.now() * 0.0068) * 4.8 * d;
+    ctx.fillStyle = '#ffe4bb';
+    ctx.beginPath();
+    ctx.moveTo(bL*.38, 0);
+    ctx.quadraticCurveTo(bL*.38+tL*.55, -bW+sw, bL*.38+tL, sw*.85);
+    ctx.quadraticCurveTo(bL*.38+tL*.55,  bW+sw, bL*.38, 0);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // ── Game logic ────────────────────────────────────────────────────────────
+  function chooseTarget(sharp = false) {
+    const w = canvas.width, h = canvas.height, m = 60 * st.dpr;
+    if (sharp) {
+      let best = null, bestAngle = 0;
+      for (let a = 0; a < 10; a++) {
+        const tx = m + Math.random()*(w-m*2), ty = m + Math.random()*(h-m*2);
+        const nd = Math.atan2(ty - st.koi.y, tx - st.koi.x);
+        let diff = Math.abs(nd - st.koi.dir);
+        if (diff > Math.PI) diff = Math.PI*2 - diff;
+        if (diff > bestAngle) { bestAngle = diff; best = { x: tx, y: ty }; }
+      }
+      st.koi.target = best || { x: w/2, y: h/2 };
+    } else {
+      st.koi.target = { x: m + Math.random()*(w-m*2), y: m + Math.random()*(h-m*2) };
+    }
+  }
+
+  function initGame() {
+    const p = PACES[st.cfg.pace], s = SENSES[st.cfg.sense];
+    st.duration = st.cfg.dur;
+    st.paceP = { ...p }; st.senseP = { ...s };
+    st.baseSpeed = 0.84 * st.dpr * p.sm;
+    st.koi.x = canvas.width*.3; st.koi.y = canvas.height*.5;
+    st.koi.target = { x: canvas.width*.7, y: canvas.height*.5 }; st.koi.dir = 0;
+    st.total = 0; st.hits = 0; st.fa = 0;
+    st.errActive = false; st.activeId = null;
+    $('surprise-ring').classList.remove('on');
+    $('catch-ctr').textContent = '0';
+    koiGlow = 0;
+    st.nextDecAt = performance.now() + 1300;
+    st.endAt = performance.now() + st.duration * 1000;
+    petals.length = 0; floats.length = 0; ripples.length = 0;
+    for (let i = 0; i < 26; i++) spawnPetal();
+  }
+
+  function initLobbyKoi() {
+    st.koi.x = canvas.width/2; st.koi.y = canvas.height/2;
+    st.koi.dir = Math.random() * Math.PI * 2; chooseTarget(false);
+  }
+
+  // ── Main loop ─────────────────────────────────────────────────────────────
+  function loop() {
+    if (st.screen === 'paused') return;
+    const now = performance.now();
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    drawBg(); drawAmbient(); drawBreath(); drawPetals();
+
+    if (st.screen === 'running') {
+      const left = st.endAt - now;
+      if (left <= 0) { stopSession(true); return; }
+      $('prog').style.width = ((left / (st.duration * 1000)) * 100) + '%';
+
+      // Gradual difficulty tightening
+      const progress = 1 - left / (st.duration * 1000);
+      const bp = PACES[st.cfg.pace];
+      const tight = progress * 0.28;
+      const curMin = bp.min * (1 - tight), curMax = bp.max * (1 - tight * 0.45);
+
+      // Move koi (smooth steering)
+      const k = st.koi;
+      const dx = k.target.x - k.x, dy = k.target.y - k.y;
+      if (Math.hypot(dx, dy) < 14 * st.dpr) chooseTarget(false);
+      let dd = Math.atan2(dy, dx) - k.dir;
+      while (dd >  Math.PI) dd -= Math.PI*2;
+      while (dd < -Math.PI) dd += Math.PI*2;
+      k.dir += dd * 0.055;
+
+      // Decision gate
+      if (now >= st.nextDecAt) {
+        if (Math.random() < 0.3) {
+          st.activeId = Math.random().toString(); st.errActive = true;
+          st.lastErrStart = now; st.total++;
+          $('surprise-ring').classList.add('on');
+          if (Math.random() < 0.55) chooseTarget(true);
+        } else {
+          st.errActive = false; st.activeId = null;
+          $('surprise-ring').classList.remove('on');
+        }
+        st.nextDecAt = now + curMin + Math.random() * (curMax - curMin);
+      }
+
+      let spd = st.baseSpeed;
+      if (st.errActive) spd *= Math.random() < 0.5 ? 0.52 : 1.55;
+      k.vx = Math.cos(k.dir) * spd; k.vy = Math.sin(k.dir) * spd;
+      k.x += k.vx; k.y += k.vy;
+      if (k.x < -70 || k.x > canvas.width+70 || k.y < -70 || k.y > canvas.height+70) chooseTarget(false);
+
+      // Error timeout → miss feedback
+      if (st.errActive && now - st.lastErrStart > st.senseP.win + st.senseP.grace) {
+        st.errActive = false; st.activeId = null;
+        $('surprise-ring').classList.remove('on');
+        flash('radial-gradient(ellipse at center,rgba(40,100,200,0.18) 0%,transparent 72%)', 0.75, 520);
+      }
+
+    } else if (st.screen === 'lobby' || st.screen === 'intro') {
+      const k = st.koi;
+      const dx = k.target.x - k.x, dy = k.target.y - k.y;
+      if (Math.hypot(dx, dy) < 18 * st.dpr || Math.random() < 0.007) chooseTarget(false);
+      let dd = Math.atan2(dy, dx) - k.dir;
+      while (dd >  Math.PI) dd -= Math.PI*2;
+      while (dd < -Math.PI) dd += Math.PI*2;
+      k.dir += dd * 0.038;
+      k.x += Math.cos(k.dir) * 0.45 * st.dpr;
+      k.y += Math.sin(k.dir) * 0.45 * st.dpr;
+      const m = 65 * st.dpr;
+      if (k.x<m || k.x>canvas.width-m || k.y<m || k.y>canvas.height-m) chooseTarget(false);
+    }
+
+    drawKoi(); drawRipples(); drawFloats();
+    st.raf = requestAnimationFrame(loop);
+  }
+
+  // ── Input ─────────────────────────────────────────────────────────────────
+  function tap(e) {
+    if (st.screen !== 'running') return;
+    e.preventDefault();
+    let x, y;
+    if (e.changedTouches) { x = e.changedTouches[0].clientX; y = e.changedTouches[0].clientY; }
+    else { x = e.clientX; y = e.clientY; }
+    x *= st.dpr; y *= st.dpr;
+    addRipple(x, y);
+
+    if (st.errActive) {
+      const elapsed = performance.now() - st.lastErrStart;
+      if (elapsed <= st.senseP.win + st.senseP.grace) {
+        // Hit — reappraisal pause before reward
+        st.errActive = false; st.activeId = null;
+        $('surprise-ring').classList.remove('on');
+        st.hits++;
+        $('catch-ctr').textContent = st.hits;
+        setTimeout(() => {
+          if (st.screen !== 'running') return;
+          rewardChord(); koiGlow = 1;
+          for (let k = 0; k < 14; k++) spawnPetal(x, y, true);
+          spawnFloat(x, y - 22 * st.dpr, '+1');
+          addRipple(x, y, '#78e8a4');
+        }, 460);
+      } else {
+        st.fa++;
+        flash('radial-gradient(ellipse at center,rgba(210,150,30,0.14) 0%,transparent 68%)', 0.8, 400);
+      }
+    } else {
+      st.fa++;
+      flash('radial-gradient(ellipse at center,rgba(210,150,30,0.14) 0%,transparent 68%)', 0.8, 400);
+    }
+  }
+  pond.addEventListener('pointerdown', tap, { passive: false });
+
+  // ── Screen control ────────────────────────────────────────────────────────
+  function setScreen(id) {
+    document.querySelectorAll('.screen').forEach(el => {
+      const match = el.id === 'screen-' + id;
+      if (match) { el.classList.remove('hidden'); requestAnimationFrame(() => el.classList.add('active')); }
+      else { el.classList.remove('active'); setTimeout(() => { if (!el.classList.contains('active')) el.classList.add('hidden'); }, 360); }
+    });
+    st.screen = id === 'hud' ? 'running' : id;
+  }
+
+  function startSession() {
+    getAC();
+    initGame(); setScreen('hud');
+    cancelAnimationFrame(st.raf); loop();
+  }
+
+  function pauseSession() {
+    st.screen = 'paused';
+    $('pause-overlay').classList.add('on');
+    cancelAnimationFrame(st.raf);
+  }
+
+  function resumeSession() {
+    $('pause-overlay').classList.remove('on');
+    st.screen = 'running';
+    const rem = parseFloat($('prog').style.width) / 100 * st.duration * 1000;
+    st.endAt = performance.now() + rem;
+    loop();
+  }
+
+  function stopSession(finished = false) {
+    cancelAnimationFrame(st.raf);
+    $('pause-overlay').classList.remove('on');
+    $('surprise-ring').classList.remove('on');
+    st.screen = 'summary';
+    if (finished) showSummary();
+    else { setScreen('lobby'); initLobbyKoi(); loop(); }
+  }
+
+  // ── Summary ───────────────────────────────────────────────────────────────
+  function getInsight(hits, total, fa) {
+    const p = total ? hits / total : 0;
+    if (total === 0) return "The water was still today. That too is a beginning.";
+    if (p > 0.82 && fa <= 2) return "Your attunement is clear. The nervous system is learning to receive surprise with ease.";
+    if (p > 0.82 && fa >= 6) return "High awareness, with watchful anticipation. The practice here is loosening the grip slightly.";
+    if (p > 0.6 && fa <= 3) return "Steady and grounded. You are building the capacity to sit with the unexpected.";
+    if (p < 0.35) return "Much passed unnoticed — not failure, but a starting place. Gentle return is the practice.";
+    if (fa > hits * 0.75) return "Your system leans forward, catching what hasn't arrived yet. Soften the anticipation.";
+    return "A quiet, steady session. Each moment of noticing is a thread of new learning.";
+  }
+
+  function showSummary() {
+    const { hits, total, fa, duration } = st;
+    const pct = total ? Math.round((hits / total) * 100) : 0;
+    const now = new Date();
+
+    LS.push({ date: now.toISOString(), hits, total, fa, pct, duration });
+
+    $('sum-date').textContent = now.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
+    $('sum-pct').textContent = pct + '%';
+    $('sum-fa').textContent = fa;
+    $('sum-total').textContent = total;
+    $('sum-dur').textContent = Math.round(duration / 60) + 'm';
+    $('sum-insight').textContent = getInsight(hits, total, fa);
+
+    // Animated ring
+    const C = 301.6;
+    const ring = $('sum-ring');
+    ring.style.strokeDashoffset = C;
+    setTimeout(() => { ring.style.strokeDashoffset = C * (1 - pct / 100); }, 120);
+
+    // Animated score count
+    let n = 0; $('sum-score').textContent = '0';
+    if (hits > 0) {
+      const step = Math.max(1, Math.ceil(hits / 28));
+      const iv = setInterval(() => {
+        n = Math.min(n + step, hits);
+        $('sum-score').textContent = n;
+        if (n >= hits) clearInterval(iv);
+      }, 38);
+    }
+
+    // Streak
+    const streak = LS.streak();
+    if (streak >= 2) { $('streak').classList.remove('hidden'); $('streak-n').textContent = streak; }
+
+    // History bars
+    const hist = LS.hist;
+    if (hist.length > 1) {
+      $('hist-section').classList.remove('hidden');
+      const el = $('hist-bars'); el.innerHTML = '';
+      const recent = hist.slice(-8);
+      const mx = Math.max(...recent.map(s => s.pct), 1);
+      recent.forEach((s, i) => {
+        const b = document.createElement('div');
+        b.className = 'hbar' + (i === recent.length - 1 ? ' cur' : '');
+        b.style.height = (Math.round((s.pct / mx) * 22) + 4) + 'px';
+        b.title = s.pct + '%';
+        el.appendChild(b);
+      });
+    }
+
+    openModal('summary');
+  }
+
+  // ── Modals ────────────────────────────────────────────────────────────────
+  function openModal(id) { const m = $('modal-' + id); m.classList.remove('hidden'); requestAnimationFrame(() => m.classList.add('open')); }
+  function closeModal(id) { const m = $('modal-' + id); m.classList.remove('open'); setTimeout(() => m.classList.add('hidden'), 360); }
+
+  // ── Intro slides ──────────────────────────────────────────────────────────
+  let slide = 0;
+  function goSlide(n) {
+    document.querySelectorAll('.slide').forEach(s => s.classList.remove('active'));
+    document.querySelectorAll('.dot').forEach(d => d.classList.remove('active'));
+    document.querySelectorAll('.slide')[n].classList.add('active');
+    document.querySelectorAll('.dot')[n].classList.add('active');
+    slide = n;
+    $('btn-next').textContent = n === 2 ? 'Begin session' : 'Next';
+  }
+  $('btn-next').onclick = () => { if (slide < 2) goSlide(slide + 1); else startSession(); };
+  $('btn-skip').onclick = () => startSession();
+
+  // ── Settings pills ────────────────────────────────────────────────────────
+  function makePills(groupId, key, labelId) {
+    document.querySelectorAll('#' + groupId + ' .pill').forEach(p => {
+      p.onclick = () => {
+        document.querySelectorAll('#' + groupId + ' .pill').forEach(x => x.classList.remove('on'));
+        p.classList.add('on');
+        st.cfg[key] = isNaN(+p.dataset.v) ? p.dataset.v : +p.dataset.v;
+        $(labelId).textContent = p.textContent;
+      };
+    });
+  }
+  makePills('dur-pills', 'dur', 'dur-lbl');
+  makePills('pace-pills', 'pace', 'pace-lbl');
+  makePills('sense-pills', 'sense', 'sense-lbl');
+  $('tog-breath').onchange = e => { st.cfg.breath = e.target.checked; };
+  $('tog-ambient').onchange = e => { st.cfg.ambient = e.target.checked; };
+
+  // ── Button bindings ───────────────────────────────────────────────────────
+  $('btn-start').onclick = () => {
+    if (!LS.seenIntro()) { setScreen('intro'); }
+    else startSession();
+  };
+  $('btn-stop').onclick = () => stopSession(false);
+  $('btn-pause').onclick = pauseSession;
+  $('btn-resume').onclick = resumeSession;
+  $('btn-settings').onclick = () => openModal('settings');
+  $('close-settings').onclick = () => closeModal('settings');
+  $('btn-help').onclick = () => openModal('help');
+  $('close-help').onclick = () => closeModal('help');
+  $('btn-home').onclick = () => { closeModal('summary'); setTimeout(() => { setScreen('lobby'); loop(); }, 360); };
+  $('btn-restart').onclick = () => { closeModal('summary'); setTimeout(startSession, 360); };
+  $('btn-dl').onclick = () => {
+    const html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+    a.download = 'koi-pond-v2.html'; document.body.appendChild(a); a.click(); a.remove();
+  };
+
+  // ── Onboarding hint ───────────────────────────────────────────────────────
+  const isFirst = LS.firstVisit();
+  if (isFirst) {
+    setTimeout(() => {
+      const h = $('hint'); h.classList.add('on');
+      setTimeout(() => h.classList.remove('on'), 3800);
+    }, 2200);
+  }
+
+  // ── Boot ──────────────────────────────────────────────────────────────────
+  initLobbyKoi(); loop();
+});
+</script>
+</body>
+</html>
